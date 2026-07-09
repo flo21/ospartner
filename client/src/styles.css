@@ -88,8 +88,6 @@ td a {
 .brand-row { display: flex; gap: 12px; align-items: center; color: #0f766e; }
 .brand-row h1 { margin: 0; font-size: 1.7rem; color: #172033; }
 .brand-row p { margin: 2px 0 0; color: #64748b; }
-.demo-credentials { display: grid; gap: 5px; color: #64748b; font-size: .82rem; }
-
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 238px 1fr; }
 aside {
   background: #172033;

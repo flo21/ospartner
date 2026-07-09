@@ -198,10 +198,6 @@ function Login({ message, onLogin }) {
         <label>Mot de passe<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></label>
         {error && <p className="error">{error}</p>}
         <button className="primary">Se connecter</button>
-        <div className="demo-credentials">
-          <span>Admin: admin@4000m.com / Admin4000m!</span>
-          <span>Partenaire: partner-alpes-tandem@4000m.com / Partner4000m!</span>
-        </div>
       </form>
     </main>
   );
