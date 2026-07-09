@@ -16,5 +16,6 @@ export const env = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
   uploadDir: process.env.UPLOAD_DIR || 'uploads/contracts',
-  databasePath: process.env.DATABASE_PATH || 'server/data/partner-os.sqlite'
+  databasePath: process.env.DATABASE_PATH || 'server/data/partner-os.sqlite',
+  afiflyTestApiToken: process.env.AFIFLY_TEST_API_TOKEN || ''
 };

@@ -2,9 +2,16 @@ import { Router } from 'express';
 import { body, param } from 'express-validator';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import {
+  extractAfiflySubdomain,
+  getAfiflyAvailability,
+  getAfiflyPlannings,
+  normalizeAfiflyUrl
+} from '../services/afiflyService.js';
 import { buildPartnerAnalysis } from '../services/aiAnalysisService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toNull, validate } from '../utils/validation.js';
+import { normalizeOptionalUrl } from '../utils/url.js';
 
 export const partnerRoutes = Router();
 
@@ -18,11 +25,39 @@ const partnerFields = [
   'region',
   'status',
   'main_contact',
+  'website_url',
   'internal_notes',
   'last_exchange_date',
   'health_score',
   'business_priority',
-  'estimated_revenue_share'
+  'estimated_revenue_share',
+  'afifly_url',
+  'afifly_subdomain',
+  'afifly_default_planning_id'
+];
+
+const publicPartnerFields = [
+  'id',
+  'name',
+  'company',
+  'email',
+  'phone',
+  'address',
+  'city',
+  'region',
+  'status',
+  'main_contact',
+  'website_url',
+  'internal_notes',
+  'last_exchange_date',
+  'health_score',
+  'business_priority',
+  'estimated_revenue_share',
+  'afifly_url',
+  'afifly_subdomain',
+  'afifly_default_planning_id',
+  'created_at',
+  'updated_at'
 ];
 
 const validators = [
@@ -37,12 +72,41 @@ const validators = [
 
 partnerRoutes.use(authenticate);
 
+function publicPartner(row) {
+  if (!row) return row;
+  const partner = {};
+  for (const field of publicPartnerFields) partner[field] = row[field];
+  return partner;
+}
+
+function preparePartnerPayload(body) {
+  const payload = {
+    ...body,
+    website_url: normalizeOptionalUrl(body.website_url)
+  };
+  if (Object.prototype.hasOwnProperty.call(payload, 'afifly_url')) {
+    payload.afifly_url = normalizeAfiflyUrl(payload.afifly_url);
+    payload.afifly_subdomain = extractAfiflySubdomain(payload.afifly_url);
+  }
+  return payload;
+}
+
+async function loadPartnerForRequest(req) {
+  const id = req.user.role === 'partner' ? req.user.partner_id : req.params.id;
+  if (req.user.role === 'partner' && req.params.id !== req.user.partner_id) {
+    return { error: { status: 403, message: 'Forbidden' } };
+  }
+  const result = await query('SELECT * FROM partners WHERE id = $1', [id]);
+  if (!result.rowCount) return { error: { status: 404, message: 'Partenaire introuvable.' } };
+  return { partner: result.rows[0] };
+}
+
 partnerRoutes.get(
   '/',
   requireRole('admin'),
   asyncHandler(async (_req, res) => {
     const result = await query('SELECT * FROM partners ORDER BY name');
-    res.json(result.rows);
+    res.json(result.rows.map(publicPartner));
   })
 );
 
@@ -58,7 +122,7 @@ partnerRoutes.post(
   validate,
   asyncHandler(async (req, res) => {
     const payload = {
-      ...req.body,
+      ...preparePartnerPayload(req.body),
       status: req.body.status || 'actif',
       health_score: req.body.health_score ?? 70
     };
@@ -69,7 +133,7 @@ partnerRoutes.post(
        RETURNING *`,
       values
     );
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(publicPartner(result.rows[0]));
   })
 );
 
@@ -78,13 +142,9 @@ partnerRoutes.get(
   param('id').isUUID(),
   validate,
   asyncHandler(async (req, res) => {
-    const id = req.user.role === 'partner' ? req.user.partner_id : req.params.id;
-    if (req.user.role === 'partner' && req.params.id !== req.user.partner_id) {
-      return res.status(403).json({ message: 'Forbidden' });
-    }
-    const result = await query('SELECT * FROM partners WHERE id = $1', [id]);
-    if (!result.rowCount) return res.status(404).json({ message: 'Partner not found' });
-    res.json(result.rows[0]);
+    const { partner, error } = await loadPartnerForRequest(req);
+    if (error) return res.status(error.status).json({ message: error.message });
+    res.json(publicPartner(partner));
   })
 );
 
@@ -98,11 +158,12 @@ partnerRoutes.put(
       return res.status(403).json({ message: 'Forbidden' });
     }
     const allowed = req.user.role === 'partner'
-      ? ['email', 'phone', 'address', 'city', 'main_contact']
+      ? ['email', 'phone', 'address', 'city', 'main_contact', 'website_url', 'afifly_url', 'afifly_subdomain', 'afifly_default_planning_id']
       : partnerFields;
-    const fields = allowed.filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
+    const payload = preparePartnerPayload(req.body);
+    const fields = allowed.filter((field) => Object.prototype.hasOwnProperty.call(payload, field));
     if (!fields.length) return res.status(400).json({ message: 'No fields to update' });
-    const values = fields.map((field) => toNull(req.body[field]));
+    const values = fields.map((field) => toNull(payload[field]));
     values.push(req.params.id);
     const result = await query(
       `UPDATE partners SET ${fields.map((field, index) => `${field} = $${index + 1}`).join(', ')}, updated_at = CURRENT_TIMESTAMP
@@ -110,9 +171,43 @@ partnerRoutes.put(
        RETURNING *`,
       values
     );
-    res.json(result.rows[0]);
+    res.json(publicPartner(result.rows[0]));
   })
 );
+
+partnerRoutes.get('/:id/afifly/plannings', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const { partner, error } = await loadPartnerForRequest(req);
+  if (error) return res.status(error.status).json({ message: error.message });
+  try {
+    res.json(await getAfiflyPlannings(partner));
+  } catch (err) {
+    res.status(err.status || 502).json({ message: err.message || 'Erreur Afifly.' });
+  }
+}));
+
+partnerRoutes.get('/:id/afifly/availability', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const { partner, error } = await loadPartnerForRequest(req);
+  if (error) return res.status(error.status).json({ message: error.message });
+  const { from, to } = req.query;
+  const planningId = req.query.planning_id;
+  if (!planningId) {
+    return res.status(400).json({ message: 'planning_id obligatoire' });
+  }
+  if (!from || !to) {
+    return res.status(400).json({ message: 'Paramètres Afifly manquants: from et to sont requis.' });
+  }
+  try {
+    const data = await getAfiflyAvailability(partner, { from, to, planningId });
+    console.log('[Afifly API response to frontend]', {
+      isArray: Array.isArray(data),
+      count: Array.isArray(data) ? data.length : null,
+      firstObject: Array.isArray(data) ? data[0] : null
+    });
+    res.json(data);
+  } catch (err) {
+    res.status(err.status || 502).json({ message: err.message || 'Erreur Afifly.' });
+  }
+}));
 
 partnerRoutes.delete(
   '/:id',

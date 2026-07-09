@@ -70,6 +70,50 @@ function date(value) {
   return value ? new Intl.DateTimeFormat('fr-FR').format(new Date(value)) : '-';
 }
 
+function isoDate(value) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function monthRange(dateValue = new Date()) {
+  const start = new Date(dateValue.getFullYear(), dateValue.getMonth(), 1);
+  const end = new Date(dateValue.getFullYear(), dateValue.getMonth() + 1, 0);
+  return { from: isoDate(start), to: isoDate(end) };
+}
+
+function seasonEndDate(fromDate) {
+  const dateValue = new Date(`${fromDate}T00:00:00`);
+  const year = dateValue.getFullYear();
+  const seasonEnd = new Date(year, 9, 31);
+  if (dateValue > seasonEnd) return isoDate(new Date(year + 1, 9, 31));
+  return isoDate(seasonEnd);
+}
+
+function daysBetween(from, to) {
+  const days = [];
+  const cursor = new Date(`${from}T00:00:00`);
+  const end = new Date(`${to}T00:00:00`);
+  while (cursor <= end) {
+    days.push(isoDate(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return days;
+}
+
+function normalizeDisplayUrl(value) {
+  if (!value) return '';
+  const trimmed = String(value).trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+function ExternalUrl({ value, children }) {
+  const href = normalizeDisplayUrl(value);
+  if (!href) return '-';
+  return <a href={href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>{children || href}</a>;
+}
+
 function App() {
   const [session, setSession] = useState(() => {
     const raw = localStorage.getItem(USER_STORAGE_KEY);
@@ -422,7 +466,7 @@ function SimpleList({ title, rows, valueKey, moneyValue }) {
 
 function Partners({ setPage }) {
   const { data, loading, error, reload } = useData('/partners');
-  const [form, setForm] = useState({ name: '', company: '', email: '', city: '', region: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
+  const [form, setForm] = useState({ name: '', company: '', email: '', city: '', region: '', website_url: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [feedback, setFeedback] = useState(() => {
     const message = sessionStorage.getItem('partner-os-feedback');
@@ -440,7 +484,7 @@ function Partners({ setPage }) {
         estimated_revenue_share: form.estimated_revenue_share === '' ? null : Number(form.estimated_revenue_share)
       })
     });
-    setForm({ name: '', company: '', email: '', city: '', region: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
+    setForm({ name: '', company: '', email: '', city: '', region: '', website_url: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
     reload();
   }
 
@@ -464,11 +508,12 @@ function Partners({ setPage }) {
           {feedback && <div className={feedback.includes('supprimé') ? 'success-block' : 'error-block'}>{feedback}</div>}
           <TableContainer>
           <table className="data-table partners-table">
-            <thead><tr><th>Partenaire</th><th>Contact</th><th>Zone</th><th>Importance</th><th>Poids CA</th><th>Statut</th><th>Santé</th><th className="table-actions">Actions</th></tr></thead>
+            <thead><tr><th>Partenaire</th><th>Contact</th><th>Site</th><th>Zone</th><th>Importance</th><th>Poids CA</th><th>Statut</th><th>Santé</th><th className="table-actions">Actions</th></tr></thead>
             <tbody>{data?.map((partner) => (
               <tr key={partner.id} className="clickable-row" onClick={() => setPage(`partner-detail:${partner.id}`)}>
                 <td><strong>{partner.name}</strong><small>{partner.company}</small></td>
                 <td>{partner.main_contact || '-'}<small>{partner.email}</small></td>
+                <td><ExternalUrl value={partner.website_url}>Site partenaire</ExternalUrl></td>
                 <td>{partner.city}<small>{partner.region}</small></td>
                 <td><ImportanceBadge value={partner.business_priority} /></td>
                 <td>{partner.estimated_revenue_share == null ? 'non renseigné' : percent(partner.estimated_revenue_share)}</td>
@@ -485,7 +530,7 @@ function Partners({ setPage }) {
         <div className="stack">
           <Panel title="Créer un partenaire">
             <form className="compact-form" onSubmit={createPartner}>
-              {['name', 'company', 'email', 'city', 'region'].map((field) => (
+              {['name', 'company', 'email', 'city', 'region', 'website_url'].map((field) => (
                 <input key={field} placeholder={field} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} required={['name', 'company', 'email'].includes(field)} />
               ))}
               <label>Priorité partenaire<select value={form.business_priority} onChange={(e) => setForm({ ...form, business_priority: e.target.value })}><option value="">Non renseigné</option><option>stratégique</option><option>haute</option><option>moyenne</option><option>basse</option></select></label>
@@ -727,7 +772,10 @@ function PartnerOverview({ partner, stats, analysis, generateAnalysis, reloadPar
               <label>Adresse<input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></label>
               <label>Ville<input value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })} /></label>
               <label>Région<input value={form.region} onChange={(event) => setForm({ ...form, region: event.target.value })} /></label>
+              <label>URL du site partenaire<input value={form.website_url} onChange={(event) => setForm({ ...form, website_url: event.target.value })} placeholder="https://exemple.fr" /></label>
               <label>Contact principal<input value={form.main_contact} onChange={(event) => setForm({ ...form, main_contact: event.target.value })} /></label>
+              <label>Lien Afifly<input value={form.afifly_url} onChange={(event) => setForm({ ...form, afifly_url: event.target.value })} placeholder="https://cepa.afifly.fr" /></label>
+              <label>Planning Afifly par défaut<input value={form.afifly_default_planning_id} onChange={(event) => setForm({ ...form, afifly_default_planning_id: event.target.value })} /></label>
               <label>Statut<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option>actif</option><option>suspendu</option><option>archive</option></select></label>
               <label>Score santé<input type="number" min="0" max="100" value={form.health_score} onChange={(event) => setForm({ ...form, health_score: event.target.value })} /></label>
               <label>Priorité partenaire<select value={form.business_priority} onChange={(event) => setForm({ ...form, business_priority: event.target.value })}><option value="">Non renseigné</option><option>stratégique</option><option>haute</option><option>moyenne</option><option>basse</option></select></label>
@@ -755,6 +803,7 @@ function PartnerOverview({ partner, stats, analysis, generateAnalysis, reloadPar
               <span>Contact principal<strong>{partner.main_contact || '-'}</strong></span>
               <span>Email<strong>{partner.email}</strong></span>
               <span>Téléphone<strong>{partner.phone || '-'}</strong></span>
+              <span>Site partenaire<strong><ExternalUrl value={partner.website_url}>Ouvrir le site</ExternalUrl></strong></span>
               <span>Adresse<strong>{partner.address || '-'}</strong></span>
               <span>Ville / région<strong>{partner.city || '-'} · {partner.region || '-'}</strong></span>
             </div>
@@ -772,6 +821,7 @@ function PartnerOverview({ partner, stats, analysis, generateAnalysis, reloadPar
               <span>Dernier benchmark<strong>{date(stats.lastCheckedAt)}</strong></span>
               <span>Anomalies prix<strong>{stats.anomalies}</strong></span>
               <span>Produits à référencer<strong>{stats.unlisted}</strong></span>
+              <span>Afifly<strong>{partner.afifly_url ? <ExternalUrl value={partner.afifly_url}>{partner.afifly_subdomain || partner.afifly_url}</ExternalUrl> : 'Non configuré'}</strong></span>
             </div>
           </Panel>
           <Panel title="Notes internes">
@@ -803,6 +853,297 @@ function PartnerOverview({ partner, stats, analysis, generateAnalysis, reloadPar
           ))}
         </div>
       </Panel>
+      <AfiflyAvailability partner={partner} />
+    </div>
+  );
+}
+
+function normalizeCollection(payload, keys = []) {
+  if (Array.isArray(payload)) return payload;
+  for (const key of keys) {
+    if (Array.isArray(payload?.[key])) return payload[key];
+  }
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.items)) return payload.items;
+  return [];
+}
+
+function extractAfiflySlots(payload) {
+  const slots = [];
+  const visit = (value, dateKey = '') => {
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, dateKey);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+
+    const looksLikeSlot =
+      value.dispos != null || value.resas != null || value.places != null ||
+      value.heure != null || value.hour != null || value.time != null || value.start_at != null || value.date_start != null ||
+      value.name != null || value.pack_ids != null;
+    if (looksLikeSlot) {
+      slots.push(dateKey && !slotDate(value) ? { ...value, date: dateKey } : value);
+      return;
+    }
+
+    for (const [key, nested] of Object.entries(value)) {
+      const normalizedDateKey = normalizeAfiflyDate(key);
+      const nextDate = normalizedDateKey || dateKey;
+      if (['places', 'availability', 'slots', 'data', 'items', 'results'].includes(key) || Array.isArray(nested) || typeof nested === 'object') {
+        visit(nested, nextDate);
+      }
+    }
+  };
+  visit(payload);
+  return slots;
+}
+
+function planningId(planning) {
+  return String(planning.id ?? planning.planning_id ?? planning.ID ?? '');
+}
+
+function planningName(planning) {
+  return planning.name || planning.title || planning.label || `Planning ${planningId(planning)}`;
+}
+
+function preferredPlanningId(plannings) {
+  if (!plannings.length) return '';
+  const preferred = plannings.find((planning) => planningId(planning) === '2');
+  return planningId(preferred || plannings[0]);
+}
+
+function normalizeAfiflyDate(value) {
+  if (!value) return '';
+  const text = String(value).trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const french = text.match(/^(\d{2})-(\d{2})-(\d{4})/);
+  if (french) return `${french[3]}-${french[2]}-${french[1]}`;
+  const slash = text.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (slash) return `${slash[3]}-${slash[2]}-${slash[1]}`;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? '' : isoDate(parsed);
+}
+
+function slotDate(slot) {
+  const raw = slot.date || slot.jour || slot.day || slot.date_start || slot.start_date || slot.datetime || slot.start_at || slot.from;
+  return normalizeAfiflyDate(raw);
+}
+
+function slotTime(slot) {
+  const raw = slot.heure || slot.hour || slot.time || slot.start_time || slot.start_at || slot.datetime || slot.from;
+  if (!raw) return '-';
+  const value = String(raw);
+  const match = value.match(/(\d{2}:\d{2})/);
+  return match ? match[1] : value;
+}
+
+function slotNumber(slot, keys) {
+  for (const key of keys) {
+    if (slot[key] != null && slot[key] !== '') return Number(slot[key]);
+  }
+  return null;
+}
+
+function slotAvailability(slot) {
+  return slotNumber(slot, ['dispos', 'available', 'availability', 'available_places', 'remaining', 'places_available']);
+}
+
+function AfiflyAvailability({ partner }) {
+  const todayIso = isoDate(new Date());
+  const initialRange = monthRange(new Date(`${todayIso}T00:00:00`));
+  const [range, setRange] = useState(initialRange);
+  const [fromDate, setFromDate] = useState(todayIso);
+  const [plannings, setPlannings] = useState([]);
+  const [selectedPlanningId, setSelectedPlanningId] = useState(partner.afifly_default_planning_id || '');
+  const [slots, setSlots] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const configured = Boolean(partner.afifly_url || partner.afifly_subdomain);
+
+  async function loadPlannings() {
+    if (!configured) {
+      setError('Lien Afifly non renseigné pour ce partenaire.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const payload = await api(`/partners/${partner.id}/afifly/plannings`);
+      const nextPlannings = normalizeCollection(payload, ['plannings']);
+      setPlannings(nextPlannings);
+      const nextPlanningId = preferredPlanningId(nextPlannings);
+      setSelectedPlanningId(nextPlanningId);
+      setSlots([]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadAvailability(nextPlanningId = selectedPlanningId) {
+    if (!configured) {
+      setError('Lien Afifly non renseigné pour ce partenaire.');
+      return;
+    }
+    if (!nextPlanningId) {
+      setError('Sélectionnez un planning Afifly.');
+      return;
+    }
+    if (!fromDate) {
+      setError('Sélectionnez une date de départ.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const toDate = seasonEndDate(fromDate);
+      const params = new URLSearchParams({ from: fromDate, to: toDate, planning_id: nextPlanningId });
+      const payload = await api(`/partners/${partner.id}/afifly/availability?${params.toString()}`);
+      const nextSlots = extractAfiflySlots(payload);
+      const displayableSlots = nextSlots.filter((slot) => Number(slotAvailability(slot) || 0) > 0);
+      const groupedDates = new Set(displayableSlots.map(slotDate).filter(Boolean));
+      console.log('[Afifly frontend payload]', {
+        rawIsArray: Array.isArray(payload),
+        rawCount: Array.isArray(payload) ? payload.length : normalizeCollection(payload, ['places', 'availability', 'slots', 'data', 'items', 'results']).length,
+        firstRawObject: Array.isArray(payload) ? payload[0] : normalizeCollection(payload, ['places', 'availability', 'slots', 'data', 'items', 'results'])[0],
+        extractedCount: nextSlots.length,
+        firstExtractedObject: nextSlots[0],
+        displayableCount: displayableSlots.length,
+        groupedDayCount: groupedDates.size,
+        firstGroupedDates: Array.from(groupedDates).slice(0, 10)
+      });
+      setSlots(nextSlots);
+      if (!nextSlots.length) {
+        setError('Afifly ne retourne aucun créneau pour ce planning et cette plage de dates.');
+      }
+    } catch (err) {
+      setError(err.message);
+      setSlots([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setSelectedPlanningId(partner.afifly_default_planning_id || '');
+    setPlannings([]);
+    setSlots([]);
+  }, [partner.id, partner.afifly_default_planning_id]);
+
+  const slotsByDay = slots.reduce((acc, slot) => {
+    if (Number(slotAvailability(slot) || 0) <= 0) return acc;
+    const key = slotDate(slot);
+    if (!key) return acc;
+    acc[key] = acc[key] || [];
+    acc[key].push(slot);
+    return acc;
+  }, {});
+  const undatedSlots = slots.filter((slot) => !slotDate(slot));
+  const datedSlotCount = Object.values(slotsByDay).reduce((total, daySlots) => total + daySlots.length, 0);
+  const hasUnrecognizedSlots = slots.length > 0 && datedSlotCount === 0 && undatedSlots.length > 0;
+  const displayableSlotCount = slots.filter((slot) => Number(slotAvailability(slot) || 0) > 0).length;
+
+  function changeMonth(offset) {
+    const current = new Date(`${range.from}T00:00:00`);
+    const next = new Date(current.getFullYear(), current.getMonth() + offset, 1);
+    setRange(monthRange(next));
+  }
+
+  function changeFromDate(value) {
+    setFromDate(value);
+    if (value) setRange(monthRange(new Date(`${value}T00:00:00`)));
+  }
+
+  function changePlanning(value) {
+    setSelectedPlanningId(value);
+    setSlots([]);
+    setError('');
+  }
+
+  return (
+    <Panel
+      title="Disponibilités Afifly"
+      action={configured && <div className="actions">
+        <button type="button" onClick={() => changeMonth(-1)}>Mois précédent</button>
+        <button type="button" onClick={() => changeMonth(1)}>Mois suivant</button>
+        <button type="button" onClick={loadPlannings}>Charger les plannings</button>
+        <button type="button" onClick={() => loadAvailability()} disabled={!selectedPlanningId}><RefreshCw size={16} /> Charger les disponibilités</button>
+      </div>}
+    >
+      {!configured ? (
+        <p className="muted padded">Lien Afifly non renseigné pour ce partenaire.</p>
+      ) : (
+        <div className="afifly-panel">
+          <div className="afifly-toolbar">
+            <label>Planning
+              <select value={selectedPlanningId} onChange={(event) => changePlanning(event.target.value)}>
+                <option value="">Sélectionner un planning</option>
+                {!plannings.length && partner.afifly_default_planning_id && <option value={partner.afifly_default_planning_id}>{partner.afifly_default_planning_id}</option>}
+                {plannings.map((planning) => <option key={planningId(planning)} value={planningId(planning)}>{planningName(planning)}</option>)}
+              </select>
+            </label>
+            <label>À partir du
+              <input type="date" value={fromDate} onChange={(event) => changeFromDate(event.target.value)} />
+            </label>
+            <strong>{date(range.from)} - {date(range.to)}</strong>
+            <small>planning_id : {selectedPlanningId || '-'}</small>
+            <small>Appel Afifly : {fromDate} → {seasonEndDate(fromDate)}</small>
+          </div>
+          <div className="afifly-debug">
+            <span>planning_id sélectionné : <strong>{selectedPlanningId || '-'}</strong></span>
+            <span>{plannings.length} planning{plannings.length > 1 ? 's' : ''} reçu{plannings.length > 1 ? 's' : ''}</span>
+            <span>{slots.length} créneau{slots.length > 1 ? 'x' : ''} reçu{slots.length > 1 ? 's' : ''}</span>
+            <span>{displayableSlotCount} disponible{displayableSlotCount > 1 ? 's' : ''}</span>
+          </div>
+          {error && <div className="error-block">{error}</div>}
+          {loading && <div className="muted-block">Chargement des disponibilités...</div>}
+          {!loading && !error && (
+            <>
+              {hasUnrecognizedSlots && <div className="muted-block">Créneaux reçus mais format non reconnu pour le calendrier.</div>}
+              <div className="afifly-calendar">
+                {daysBetween(range.from, range.to).map((day) => {
+                  const daySlots = slotsByDay[day] || [];
+                  return (
+                    <div key={day} className={`afifly-day ${daySlots.some((slot) => Number(slot.dispos || slot.available || 0) > 0) ? 'has-availability' : ''}`}>
+                      <div className="afifly-day-head">
+                        <strong>{new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short' }).format(new Date(`${day}T00:00:00`))}</strong>
+                        <span>{daySlots.length} créneau{daySlots.length > 1 ? 'x' : ''}</span>
+                      </div>
+                      <div className="afifly-slots">
+                        {daySlots.length ? daySlots.map((slot, index) => <AfiflySlot key={`${day}-${index}`} slot={slot} />) : <span className="muted">Aucun créneau</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {undatedSlots.length > 0 && (
+                <div className="afifly-undated">
+                  <strong>Créneaux sans date exploitable</strong>
+                  <div className="afifly-slots">
+                    {undatedSlots.map((slot, index) => <AfiflySlot key={index} slot={slot} />)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function AfiflySlot({ slot }) {
+  const dispos = slotAvailability(slot);
+  const resas = slotNumber(slot, ['resas', 'bookings', 'reserved']);
+  const places = slotNumber(slot, ['places', 'capacity', 'total']);
+  return (
+    <div className={`afifly-slot ${Number(dispos || 0) > 0 ? 'available' : ''}`}>
+      <strong>{slotTime(slot)} → {dispos ?? '-'} place{Number(dispos) > 1 ? 's' : ''}</strong>
+      <small>{slot.name || slot.label || 'Créneau'} · resas {resas ?? '-'} · capacité {places ?? '-'}</small>
+      {slot.pack_ids && <small>packs {Array.isArray(slot.pack_ids) ? slot.pack_ids.join(', ') : String(slot.pack_ids)}</small>}
     </div>
   );
 }
@@ -816,13 +1157,17 @@ function partnerFormFromPartner(partner) {
     address: partner.address || '',
     city: partner.city || '',
     region: partner.region || '',
+    website_url: partner.website_url || '',
     status: partner.status || 'actif',
     main_contact: partner.main_contact || '',
     internal_notes: partner.internal_notes || '',
     last_exchange_date: partner.last_exchange_date || '',
     health_score: partner.health_score ?? 70,
     business_priority: partner.business_priority || '',
-    estimated_revenue_share: partner.estimated_revenue_share ?? ''
+    estimated_revenue_share: partner.estimated_revenue_share ?? '',
+    afifly_url: partner.afifly_url || '',
+    afifly_subdomain: partner.afifly_subdomain || '',
+    afifly_default_planning_id: partner.afifly_default_planning_id || '',
   };
 }
 
@@ -842,6 +1187,7 @@ const productDefaults = {
   status: 'actif',
   valid_from: '',
   valid_to: '',
+  pricing_url: '',
   notes: ''
 };
 
@@ -867,6 +1213,7 @@ function ProductCrud({ partnerId, products, urls = [], initialFilter = '', reloa
       status: product.status || 'actif',
       valid_from: product.valid_from || '',
       valid_to: product.valid_to || '',
+      pricing_url: product.pricing_url || '',
       notes: product.notes || ''
     });
   }
@@ -890,7 +1237,8 @@ function ProductCrud({ partnerId, products, urls = [], initialFilter = '', reloa
       listing_status: form.listing_status,
       min_margin_rate: Number(form.min_margin_rate || 0),
       margin_exception_accepted: Number(form.margin_exception_accepted || 0),
-      margin_exception_reason: form.margin_exception_accepted ? form.margin_exception_reason : null
+      margin_exception_reason: form.margin_exception_accepted ? form.margin_exception_reason : null,
+      pricing_url: form.pricing_url || null
     };
     await api(editingId ? `/products/${editingId}` : '/products', {
       method: editingId ? 'PUT' : 'POST',
@@ -933,6 +1281,7 @@ function ProductCrud({ partnerId, products, urls = [], initialFilter = '', reloa
           <label className="checkbox-line"><input type="checkbox" checked={Number(form.margin_exception_accepted) === 1} onChange={(e) => setForm({ ...form, margin_exception_accepted: e.target.checked ? 1 : 0 })} /> Accepter cette marge comme normale</label>
           {Number(form.margin_exception_accepted) === 1 && <textarea rows="2" placeholder="Justification obligatoire de l’exception marge" value={form.margin_exception_reason || ''} onChange={(e) => setForm({ ...form, margin_exception_reason: e.target.value })} required />}
           <input type="date" value={form.valid_to || ''} onChange={(e) => setForm({ ...form, valid_to: e.target.value })} />
+          <input placeholder="URL tarifs produit" value={form.pricing_url || ''} onChange={(e) => setForm({ ...form, pricing_url: e.target.value })} />
           <input placeholder="Notes" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           <div className="actions"><button className="primary"><Save size={16} /> {editingId ? 'Mettre à jour' : 'Enregistrer'}</button>{editingId && <button type="button" onClick={reset}>Annuler l’édition</button>}</div>
         </form>
@@ -962,11 +1311,12 @@ function ProductCatalogTable({ products, urls = [], initialFilter = '', edit, re
     <Panel title="Produits du partenaire" action={<div className="filters">{['Tous', 'Référencés', 'Non référencés', 'À référencer', 'Anomalies'].map((item) => <button key={item} className={filter === item ? 'active-filter' : ''} onClick={() => setFilter(item)}>{item}</button>)}</div>}>
         <TableContainer className="product-table-scroll">
         <table className="data-table product-table">
-          <thead><tr><th className="col-product">Produit</th><th className="col-type">Type</th><th className="col-money">Prix public partenaire</th><th className="col-money">Prix d’achat partenaire</th><th className="col-money">Prix affiché 4000m</th><th className="col-listed">Référencé 4000m</th><th className="col-money">Marge €</th><th className="col-rate">Taux de marge</th><th className="col-status">Statut référencement</th><th className="sticky-actions table-actions">Actions</th></tr></thead>
+          <thead><tr><th className="col-product">Produit</th><th className="col-type">Type</th><th>URL tarifs</th><th className="col-money">Prix public partenaire</th><th className="col-money">Prix d’achat partenaire</th><th className="col-money">Prix affiché 4000m</th><th className="col-listed">Référencé 4000m</th><th className="col-money">Marge €</th><th className="col-rate">Taux de marge</th><th className="col-status">Statut référencement</th><th className="sticky-actions table-actions">Actions</th></tr></thead>
           <tbody>{filtered.map((product) => (
             <tr key={product.id} className="clickable-row" onClick={() => edit(product)}>
               <td><strong>{product.name}</strong><small>{product.description || product.notes}</small></td>
               <td>{product.type}</td>
+              <td><ExternalUrl value={product.pricing_url}>Voir tarifs</ExternalUrl></td>
               <td>{money(product.partner_public_price)}</td>
               <td>{money(product.partner_purchase_price)}</td>
               <td>{product.price_4000m == null ? '-' : money(product.price_4000m)}</td>

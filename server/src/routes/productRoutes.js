@@ -5,6 +5,7 @@ import { authenticate, requireRole } from '../middleware/auth.js';
 import { syncProductOfferAnomalies } from '../services/offerControlService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toNull, validate } from '../utils/validation.js';
+import { normalizeOptionalUrl } from '../utils/url.js';
 
 export const productRoutes = Router();
 
@@ -25,6 +26,7 @@ const fields = [
   'status',
   'valid_from',
   'valid_to',
+  'pricing_url',
   'notes'
 ];
 
@@ -65,7 +67,7 @@ productRoutes.post(
   body('partner_purchase_price').isFloat({ min: 0 }),
   validate,
   asyncHandler(async (req, res) => {
-    const values = fields.map((field) => toNull(req.body[field]));
+    const values = fields.map((field) => field === 'pricing_url' ? normalizeOptionalUrl(req.body[field]) : toNull(req.body[field]));
     const result = await query(
       `INSERT INTO products (${fields.join(', ')})
        VALUES (${fields.map((_, index) => `$${index + 1}`).join(', ')})
@@ -86,7 +88,7 @@ productRoutes.put(
   asyncHandler(async (req, res) => {
     const updateFields = fields.filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
     if (!updateFields.length) return res.status(400).json({ message: 'Aucun champ produit à mettre à jour.' });
-    const values = updateFields.map((field) => toNull(req.body[field]));
+    const values = updateFields.map((field) => field === 'pricing_url' ? normalizeOptionalUrl(req.body[field]) : toNull(req.body[field]));
     values.push(req.params.id);
     const result = await query(
       `UPDATE products SET ${updateFields.map((field, index) => `${field} = $${index + 1}`).join(', ')}, updated_at = CURRENT_TIMESTAMP
