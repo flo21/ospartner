@@ -16,7 +16,17 @@ async function getOfferControlRows() {
       p.estimated_revenue_share,
       (SELECT COUNT(*) FROM products pr WHERE pr.partner_id = p.id) AS products_count,
       (SELECT COUNT(*) FROM products pr WHERE pr.partner_id = p.id AND pr.is_listed_on_4000m = 1) AS listed_count,
-      (SELECT COUNT(*) FROM products pr WHERE pr.partner_id = p.id AND pr.is_listed_on_4000m = 0) AS unlisted_count,
+      (
+        SELECT COUNT(*)
+        FROM products pr
+        WHERE pr.partner_id = p.id
+          AND (
+            pr.is_listed_on_4000m = 0
+            OR pr.listing_status = 'à_référencer'
+            OR pr.listing_status = 'a_referencer'
+            OR (pr.status = 'actif' AND pr.price_4000m IS NULL)
+          )
+      ) AS unlisted_count,
       CASE
         WHEN (SELECT COUNT(*) FROM products pr WHERE pr.partner_id = p.id) = 0 THEN 0
         ELSE ROUND(

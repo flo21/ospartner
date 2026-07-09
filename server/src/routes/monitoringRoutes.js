@@ -3,6 +3,7 @@ import { body, param } from 'express-validator';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { runPriceChecks } from '../services/priceMonitorService.js';
+import { syncProductOfferAnomalies } from '../services/offerControlService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toNull, validate } from '../utils/validation.js';
 
@@ -46,6 +47,7 @@ monitoringRoutes.post(
        RETURNING *`,
       [req.body.product_id, toNull(req.body.label) || 'Source', req.body.type, toNull(req.body.competitor_name), req.body.url, toNull(req.body.notes)]
     );
+    await syncProductOfferAnomalies(result.rows[0].product_id);
     res.status(201).json(result.rows[0]);
   })
 );
@@ -65,12 +67,16 @@ monitoringRoutes.put(
        RETURNING *`,
       values
     );
+    if (!result.rowCount) return res.status(404).json({ message: 'URL surveillée introuvable.' });
+    await syncProductOfferAnomalies(result.rows[0].product_id);
     res.json(result.rows[0]);
   })
 );
 
 monitoringRoutes.delete('/urls/:id', requireRole('admin'), param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const url = await query('SELECT product_id FROM monitored_urls WHERE id = $1', [req.params.id]);
   await query('DELETE FROM monitored_urls WHERE id = $1', [req.params.id]);
+  if (url.rowCount) await syncProductOfferAnomalies(url.rows[0].product_id);
   res.status(204).end();
 }));
 
@@ -100,5 +106,9 @@ monitoringRoutes.get('/price-checks', asyncHandler(async (req, res) => {
 
 monitoringRoutes.post('/price-checks/run', requireRole('admin'), asyncHandler(async (_req, res) => {
   const checks = await runPriceChecks();
+  const productIds = [...new Set(checks.map((check) => check.product_id).filter(Boolean))];
+  for (const productId of productIds) {
+    await syncProductOfferAnomalies(productId);
+  }
   res.status(201).json({ created: checks.length, checks });
 }));

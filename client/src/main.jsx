@@ -612,7 +612,7 @@ function PartnerCrm({ partnerId, initialTab = 'overview', initialFilter = '', se
 function buildPartnerStats(products, urls) {
   const anomalies = products.reduce((count, product) => count + countProductAnomalies(product, urls), 0);
   const listed = products.filter((product) => Number(product.is_listed_on_4000m) === 1).length;
-  const unlisted = products.length - listed;
+  const unlisted = products.filter(productNeedsReference).length;
   const referencedWithMargin = products.filter((product) => Number(product.is_listed_on_4000m) === 1 && product.margin_rate != null);
   const averageProductMargin = referencedWithMargin.reduce((sum, product, _index, arr) => sum + Number(product.margin_rate || 0) / arr.length, 0);
   const coverageRate = products.length ? (listed / products.length) * 100 : 0;
@@ -631,13 +631,21 @@ function buildPartnerStats(products, urls) {
   };
 }
 
+function productNeedsReference(product) {
+  const price4000m = product.price_4000m == null ? null : Number(product.price_4000m);
+  return Number(product.is_listed_on_4000m) !== 1 ||
+    product.listing_status === 'à_référencer' ||
+    product.listing_status === 'a_referencer' ||
+    (product.status === 'actif' && price4000m == null);
+}
+
 function countProductAnomalies(product, urls = []) {
   const price4000m = product.price_4000m == null ? null : Number(product.price_4000m);
   const partnerPublicPrice = product.partner_public_price == null ? null : Number(product.partner_public_price);
   const marginRate = product.margin_rate == null ? null : Number(product.margin_rate);
   const listed = Number(product.is_listed_on_4000m) === 1;
   let count = 0;
-  if (!listed || product.listing_status === 'à_référencer' || (product.status === 'actif' && price4000m == null)) count += 1;
+  if (productNeedsReference(product)) count += 1;
   if (listed && price4000m != null && product.partner_purchase_price != null && marginRate != null && marginRate < 15 && Number(product.margin_exception_accepted) !== 1) count += 1;
   if (price4000m != null && partnerPublicPrice != null && partnerPublicPrice < price4000m) count += 1;
   count += urls.filter((url) => url.product_id === product.id && (url.status === 'error' || (url.type === 'competitor' && price4000m != null && url.last_detected_price != null && Number(url.last_detected_price) < price4000m))).length;
@@ -950,7 +958,7 @@ function ProductCatalogTable({ products, urls = [], initialFilter = '', edit, re
   const filtered = products.filter((product) => {
     if (filter === 'Référencés') return Number(product.is_listed_on_4000m) === 1;
     if (filter === 'Non référencés') return Number(product.is_listed_on_4000m) === 0;
-    if (filter === 'À référencer') return product.listing_status === 'à_référencer';
+    if (filter === 'À référencer') return productNeedsReference(product);
     if (filter === 'Anomalies') return countProductAnomalies(product, urls) > 0;
     return true;
   });

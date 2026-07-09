@@ -83,7 +83,7 @@ async function getOrCreateAutomaticCard(partnerId, partnerName, priority) {
      RETURNING *`,
     [
       partnerId,
-      `Anomalies offre - ${partnerName}`,
+      partnerName,
       'Anomalies détectées automatiquement par le contrôle de l’offre.',
       priority
     ]
@@ -115,11 +115,22 @@ async function upsertAnomalyItem(anomaly) {
            label = $2,
            description = $3,
            priority = $4,
+           completed = 0,
+           completed_at = NULL,
            ignored = 0,
            ignore_reason = NULL,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $5`,
       [card.id, anomaly.label, anomaly.description, anomaly.priority, item.id]
+    );
+    await query(
+      `DELETE FROM crm_card_items
+       WHERE id <> $1
+         AND partner_id = $2
+         AND COALESCE(product_id, '') = COALESCE($3, '')
+         AND type = $4
+         AND anomaly_code = $5`,
+      [item.id, anomaly.partner_id, anomaly.product_id || null, anomaly.type, anomaly.anomaly_code]
     );
     if (item.card_status === 'done') {
       await query(
@@ -153,6 +164,182 @@ async function upsertAnomalyItem(anomaly) {
     ]
   );
   return { created: true, item_id: inserted.rows[0].id, card_id: card.id };
+}
+
+async function loadPartnerProducts(partnerId) {
+  const products = await query(`
+    SELECT p.*, partners.name AS partner_name
+    FROM products p
+    JOIN partners ON partners.id = p.partner_id
+    WHERE p.partner_id = $1
+  `, [partnerId]);
+  return products.rows;
+}
+
+async function loadPartnerUrls(partnerId) {
+  const urls = await query(`
+    SELECT mu.*
+    FROM monitored_urls mu
+    JOIN products p ON p.id = mu.product_id
+    WHERE p.partner_id = $1
+  `, [partnerId]);
+  return urls.rows;
+}
+
+function buildProductAnomalies(product, productUrls = []) {
+  const anomalies = [];
+  if (product.status !== 'actif') return anomalies;
+  const price4000m = normalizeNumber(product.price_4000m);
+  const partnerPublicPrice = normalizeNumber(product.partner_public_price);
+  const partnerPurchasePrice = normalizeNumber(product.partner_purchase_price);
+  const marginRate = normalizeNumber(product.margin_rate);
+  const minMarginRate = normalizeNumber(product.min_margin_rate) ?? MARGIN_THRESHOLD;
+  const isListed = Number(product.is_listed_on_4000m) === 1;
+  const marginExceptionAccepted = Number(product.margin_exception_accepted) === 1;
+
+  if (!isListed || product.listing_status === 'à_référencer' || product.listing_status === 'a_referencer' || (product.status === 'actif' && price4000m == null)) {
+    anomalies.push({
+      partner_id: product.partner_id,
+      partner_name: product.partner_name,
+      product_id: product.id,
+      type: 'référencement',
+      anomaly_code: 'PRODUCT_NOT_LISTED',
+      priority: 'haute',
+      label: `Référencer le produit - ${product.name}`,
+      description: `${product.partner_name} vend ce produit mais il doit être référencé ou complété chez 4000m.`
+    });
+  }
+
+  if (
+    isListed &&
+    price4000m != null &&
+    partnerPurchasePrice != null &&
+    marginRate != null &&
+    marginRate < minMarginRate &&
+    !marginExceptionAccepted
+  ) {
+    anomalies.push({
+      partner_id: product.partner_id,
+      partner_name: product.partner_name,
+      product_id: product.id,
+      type: 'marge',
+      anomaly_code: 'MARGIN_BELOW_15',
+      priority: 'haute',
+      label: `Corriger la marge - ${product.name}`,
+      description: `${product.name}: marge ${formatRate(marginRate)}% sous le seuil ${formatRate(minMarginRate)}%.`
+    });
+  }
+
+  if (price4000m != null && partnerPublicPrice != null && partnerPublicPrice < price4000m) {
+    anomalies.push({
+      partner_id: product.partner_id,
+      partner_name: product.partner_name,
+      product_id: product.id,
+      type: 'prix',
+      anomaly_code: 'PARTNER_PRICE_LOWER_THAN_4000M',
+      priority: 'critique',
+      label: `Prix public partenaire inférieur à 4000m sur ${product.name}`,
+      description: `${product.name}: partenaire ${partnerPublicPrice} EUR vs 4000m ${price4000m} EUR.`
+    });
+  }
+
+  for (const url of productUrls) {
+    if (url.status === 'error') {
+      anomalies.push({
+        partner_id: product.partner_id,
+        partner_name: product.partner_name,
+        product_id: product.id,
+        type: 'benchmark',
+        anomaly_code: 'BENCHMARK_URL_ERROR',
+        priority: 'moyenne',
+        label: `URL benchmark en erreur sur ${product.name}`,
+        description: `${url.label}: ${url.url}`
+      });
+    }
+
+    if (url.type === 'competitor' && price4000m != null && url.last_detected_price != null && Number(url.last_detected_price) < price4000m) {
+      anomalies.push({
+        partner_id: product.partner_id,
+        partner_name: product.partner_name,
+        product_id: product.id,
+        type: 'benchmark',
+        anomaly_code: 'COMPETITOR_PRICE_LOWER_THAN_4000M',
+        priority: 'critique',
+        label: `Concurrent moins cher sur ${product.name}`,
+        description: `${url.competitor_name || url.label}: ${url.last_detected_price} EUR vs ${price4000m} EUR chez 4000m.`
+      });
+    }
+  }
+
+  return anomalies;
+}
+
+async function resolveStaleProductItems(productId, activeKeys) {
+  const result = await query(
+    `SELECT item.*
+     FROM crm_card_items item
+     JOIN crm_cards c ON c.id = item.card_id
+     WHERE c.source = 'automatique'
+       AND item.product_id = $1
+       AND item.anomaly_code IS NOT NULL
+       AND item.completed = 0
+       AND item.ignored = 0`,
+    [productId]
+  );
+
+  const resolved = [];
+  for (const item of result.rows) {
+    const key = `${item.partner_id || ''}:${item.product_id || ''}:${item.type}:${item.anomaly_code}`;
+    if (activeKeys.has(key)) continue;
+    await query(
+      `UPDATE crm_card_items
+       SET completed = 1,
+           completed_at = CURRENT_TIMESTAMP,
+           description = CASE
+             WHEN description IS NULL OR description = '' THEN 'Anomalie résolue automatiquement après mise à jour du produit.'
+             ELSE description || char(10) || 'Anomalie résolue automatiquement après mise à jour du produit.'
+           END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [item.id]
+    );
+    resolved.push(item.id);
+  }
+  return resolved;
+}
+
+async function resolveStalePartnerItems(partnerId, activeKeys) {
+  const result = await query(
+    `SELECT item.*
+     FROM crm_card_items item
+     JOIN crm_cards c ON c.id = item.card_id
+     WHERE c.source = 'automatique'
+       AND item.partner_id = $1
+       AND item.anomaly_code IS NOT NULL
+       AND item.completed = 0
+       AND item.ignored = 0`,
+    [partnerId]
+  );
+
+  const resolved = [];
+  for (const item of result.rows) {
+    const key = `${item.partner_id || ''}:${item.product_id || ''}:${item.type}:${item.anomaly_code}`;
+    if (activeKeys.has(key)) continue;
+    await query(
+      `UPDATE crm_card_items
+       SET completed = 1,
+           completed_at = CURRENT_TIMESTAMP,
+           description = CASE
+             WHEN description IS NULL OR description = '' THEN 'Anomalie résolue automatiquement après synchronisation.'
+             ELSE description || char(10) || 'Anomalie résolue automatiquement après synchronisation.'
+           END,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [item.id]
+    );
+    resolved.push(item.id);
+  }
+  return resolved;
 }
 
 async function resolveStaleAutomaticItems(activeKeys) {
@@ -219,16 +406,17 @@ async function consolidateAutomaticPartnerCards() {
   }
 
   for (const cards of groups.values()) {
-    if (cards.length <= 1) continue;
     const canonical =
       cards.find((card) => ACTIVE_CARD_STATUSES.includes(card.status) && card.title.startsWith('Anomalies offre')) ||
       cards.find((card) => ACTIVE_CARD_STATUSES.includes(card.status)) ||
       cards.find((card) => card.title.startsWith('Anomalies offre')) ||
       cards[0];
-    for (const card of cards) {
-      if (card.id === canonical.id) continue;
-      await query('UPDATE crm_card_items SET card_id = $1, updated_at = CURRENT_TIMESTAMP WHERE card_id = $2', [canonical.id, card.id]);
-      await query('DELETE FROM crm_cards WHERE id = $1', [card.id]);
+    if (cards.length > 1) {
+      for (const card of cards) {
+        if (card.id === canonical.id) continue;
+        await query('UPDATE crm_card_items SET card_id = $1, updated_at = CURRENT_TIMESTAMP WHERE card_id = $2', [canonical.id, card.id]);
+        await query('DELETE FROM crm_cards WHERE id = $1', [card.id]);
+      }
     }
     const partner = await query('SELECT name FROM partners WHERE id = $1', [canonical.partner_id]);
     await query(
@@ -238,7 +426,7 @@ async function consolidateAutomaticPartnerCards() {
            type = 'autre',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $1`,
-      [canonical.id, `Anomalies offre - ${partner.rows[0]?.name || 'partenaire'}`]
+      [canonical.id, partner.rows[0]?.name || 'Partenaire']
     );
   }
 }
@@ -285,6 +473,60 @@ async function detectBenchmarkCellAnomalies(products) {
   return anomalies;
 }
 
+async function syncAnomalies(anomalies, staleResolver) {
+  const activeKeys = new Set();
+  const stats = { added: 0, existing: 0 };
+
+  for (const anomaly of anomalies) {
+    const key = `${anomaly.partner_id || ''}:${anomaly.product_id || ''}:${anomaly.type}:${anomaly.anomaly_code}`;
+    activeKeys.add(key);
+    const result = await upsertAnomalyItem(anomaly);
+    if (result.created) stats.added += 1;
+    else stats.existing += 1;
+  }
+
+  const resolved = await staleResolver(activeKeys);
+  await consolidateAutomaticPartnerCards();
+  await refreshAutomaticCards();
+
+  return {
+    anomalies_count: anomalies.length,
+    created_tasks: stats.added,
+    existing_tasks: stats.existing,
+    resolved_tasks: resolved.length
+  };
+}
+
+export async function syncProductOfferAnomalies(productId) {
+  await consolidateAutomaticPartnerCards();
+  const productResult = await query(`
+    SELECT p.*, partners.name AS partner_name
+    FROM products p
+    JOIN partners ON partners.id = p.partner_id
+    WHERE p.id = $1
+  `, [productId]);
+  if (!productResult.rowCount) {
+    return { anomalies_count: 0, created_tasks: 0, existing_tasks: 0, resolved_tasks: 0 };
+  }
+
+  const urls = await query('SELECT * FROM monitored_urls WHERE product_id = $1', [productId]);
+  const anomalies = buildProductAnomalies(productResult.rows[0], urls.rows);
+  return syncAnomalies(anomalies, (activeKeys) => resolveStaleProductItems(productId, activeKeys));
+}
+
+export async function syncPartnerOfferAnomalies(partnerId) {
+  await consolidateAutomaticPartnerCards();
+  const products = await loadPartnerProducts(partnerId);
+  const urls = await loadPartnerUrls(partnerId);
+  const anomalies = [];
+  for (const product of products) {
+    const productUrls = urls.filter((url) => url.product_id === product.id);
+    anomalies.push(...buildProductAnomalies(product, productUrls));
+  }
+  anomalies.push(...await detectBenchmarkCellAnomalies(products));
+  return syncAnomalies(anomalies, (activeKeys) => resolveStalePartnerItems(partnerId, activeKeys));
+}
+
 export async function runOfferControl() {
   await consolidateAutomaticPartnerCards();
   const productsResult = await query(`
@@ -302,86 +544,7 @@ export async function runOfferControl() {
 
   for (const product of products) {
     const productUrls = urls.rows.filter((url) => url.product_id === product.id);
-    const price4000m = normalizeNumber(product.price_4000m);
-    const partnerPublicPrice = normalizeNumber(product.partner_public_price);
-    const partnerPurchasePrice = normalizeNumber(product.partner_purchase_price);
-    const marginRate = normalizeNumber(product.margin_rate);
-    const isListed = Number(product.is_listed_on_4000m) === 1;
-    const marginExceptionAccepted = Number(product.margin_exception_accepted) === 1;
-
-    if (!isListed || product.listing_status === 'à_référencer' || price4000m == null) {
-      anomalies.push({
-        partner_id: product.partner_id,
-        partner_name: product.partner_name,
-        product_id: product.id,
-        type: 'référencement',
-        anomaly_code: 'PRODUCT_NOT_LISTED',
-        priority: 'haute',
-        label: `Référencer le produit ${product.name} chez 4000m`,
-        description: `${product.partner_name} vend ce produit mais il n’est pas correctement référencé chez 4000m.`
-      });
-    }
-
-    if (
-      isListed &&
-      price4000m != null &&
-      partnerPurchasePrice != null &&
-      marginRate != null &&
-      marginRate < MARGIN_THRESHOLD &&
-      !marginExceptionAccepted
-    ) {
-      anomalies.push({
-        partner_id: product.partner_id,
-        partner_name: product.partner_name,
-        product_id: product.id,
-        type: 'marge',
-        anomaly_code: 'MARGIN_BELOW_15',
-        priority: marginRate < 10 ? 'critique' : 'haute',
-        label: `Marge inférieure à 15% sur ${product.name} : ${formatRate(marginRate)}%`,
-        description: `${product.name}: prix 4000m ${price4000m} EUR, prix d’achat ${partnerPurchasePrice} EUR.`
-      });
-    }
-
-    if (price4000m != null && partnerPublicPrice != null && partnerPublicPrice < price4000m) {
-      anomalies.push({
-        partner_id: product.partner_id,
-        partner_name: product.partner_name,
-        product_id: product.id,
-        type: 'prix',
-        anomaly_code: 'PARTNER_PRICE_LOWER_THAN_4000M',
-        priority: 'critique',
-        label: `Prix public partenaire inférieur à 4000m sur ${product.name}`,
-        description: `${product.name}: partenaire ${partnerPublicPrice} EUR vs 4000m ${price4000m} EUR.`
-      });
-    }
-
-    for (const url of productUrls) {
-      if (url.status === 'error') {
-        anomalies.push({
-          partner_id: product.partner_id,
-          partner_name: product.partner_name,
-          product_id: product.id,
-          type: 'benchmark',
-          anomaly_code: 'BENCHMARK_URL_ERROR',
-          priority: 'moyenne',
-          label: `URL benchmark en erreur sur ${product.name}`,
-          description: `${url.label}: ${url.url}`
-        });
-      }
-
-      if (url.type === 'competitor' && price4000m != null && url.last_detected_price != null && Number(url.last_detected_price) < price4000m) {
-        anomalies.push({
-          partner_id: product.partner_id,
-          partner_name: product.partner_name,
-          product_id: product.id,
-          type: 'benchmark',
-          anomaly_code: 'COMPETITOR_PRICE_LOWER_THAN_4000M',
-          priority: 'critique',
-          label: `Concurrent moins cher sur ${product.name}`,
-          description: `${url.competitor_name || url.label}: ${url.last_detected_price} EUR vs ${price4000m} EUR chez 4000m.`
-        });
-      }
-    }
+    anomalies.push(...buildProductAnomalies(product, productUrls));
   }
 
   anomalies.push(...await detectBenchmarkCellAnomalies(products));

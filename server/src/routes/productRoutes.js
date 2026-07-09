@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, param } from 'express-validator';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { syncProductOfferAnomalies } from '../services/offerControlService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { toNull, validate } from '../utils/validation.js';
 
@@ -71,7 +72,9 @@ productRoutes.post(
        RETURNING *`,
       values
     );
-    res.status(201).json(result.rows[0]);
+    await syncProductOfferAnomalies(result.rows[0].id);
+    const synced = await query('SELECT * FROM products WHERE id = $1', [result.rows[0].id]);
+    res.status(201).json(synced.rows[0]);
   })
 );
 
@@ -82,6 +85,7 @@ productRoutes.put(
   validate,
   asyncHandler(async (req, res) => {
     const updateFields = fields.filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
+    if (!updateFields.length) return res.status(400).json({ message: 'Aucun champ produit à mettre à jour.' });
     const values = updateFields.map((field) => toNull(req.body[field]));
     values.push(req.params.id);
     const result = await query(
@@ -90,7 +94,10 @@ productRoutes.put(
        RETURNING *`,
       values
     );
-    res.json(result.rows[0]);
+    if (!result.rowCount) return res.status(404).json({ message: 'Produit introuvable.' });
+    await syncProductOfferAnomalies(result.rows[0].id);
+    const synced = await query('SELECT * FROM products WHERE id = $1', [result.rows[0].id]);
+    res.json(synced.rows[0]);
   })
 );
 

@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import { body, param } from 'express-validator';
 import { query } from '../db/pool.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { syncPartnerOfferAnomalies } from '../services/offerControlService.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { validate } from '../utils/validation.js';
 
@@ -82,6 +83,16 @@ async function nextPosition(tableId, tableName) {
   return Number(result.rows[0].next);
 }
 
+async function partnerIdFromRow(rowId) {
+  const result = await query(`
+    SELECT bt.partner_id
+    FROM benchmark_rows br
+    JOIN benchmark_tables bt ON bt.id = br.table_id
+    WHERE br.id = $1
+  `, [rowId]);
+  return result.rows[0]?.partner_id || null;
+}
+
 benchmarkRoutes.get('/partner/:partnerId', param('partnerId').isUUID(), validate, asyncHandler(async (req, res) => {
   res.json(await loadTable(req.params.partnerId));
 }));
@@ -94,15 +105,19 @@ benchmarkRoutes.post('/partner/:partnerId/columns', param('partnerId').isUUID(),
 }));
 
 benchmarkRoutes.put('/columns/:id', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const owner = await query('SELECT bt.partner_id FROM benchmark_columns bc JOIN benchmark_tables bt ON bt.id = bc.table_id WHERE bc.id = $1', [req.params.id]);
   const fields = ['name', 'position'].filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
   const values = fields.map((field) => req.body[field]);
   values.push(req.params.id);
   const result = await query(`UPDATE benchmark_columns SET ${fields.map((field, index) => `${field} = $${index + 1}`).join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+  if (owner.rows[0]?.partner_id) await syncPartnerOfferAnomalies(owner.rows[0].partner_id);
   res.json(result.rows[0]);
 }));
 
 benchmarkRoutes.delete('/columns/:id', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const owner = await query('SELECT bt.partner_id FROM benchmark_columns bc JOIN benchmark_tables bt ON bt.id = bc.table_id WHERE bc.id = $1', [req.params.id]);
   await query('DELETE FROM benchmark_columns WHERE id = $1', [req.params.id]);
+  if (owner.rows[0]?.partner_id) await syncPartnerOfferAnomalies(owner.rows[0].partner_id);
   res.status(204).end();
 }));
 
@@ -114,15 +129,19 @@ benchmarkRoutes.post('/partner/:partnerId/rows', param('partnerId').isUUID(), bo
 }));
 
 benchmarkRoutes.put('/rows/:id', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const owner = await query('SELECT bt.partner_id FROM benchmark_rows br JOIN benchmark_tables bt ON bt.id = br.table_id WHERE br.id = $1', [req.params.id]);
   const fields = ['name', 'type', 'position'].filter((field) => Object.prototype.hasOwnProperty.call(req.body, field));
   const values = fields.map((field) => req.body[field]);
   values.push(req.params.id);
   const result = await query(`UPDATE benchmark_rows SET ${fields.map((field, index) => `${field} = $${index + 1}`).join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+  if (owner.rows[0]?.partner_id) await syncPartnerOfferAnomalies(owner.rows[0].partner_id);
   res.json(result.rows[0]);
 }));
 
 benchmarkRoutes.delete('/rows/:id', param('id').isUUID(), validate, asyncHandler(async (req, res) => {
+  const owner = await query('SELECT bt.partner_id FROM benchmark_rows br JOIN benchmark_tables bt ON bt.id = br.table_id WHERE br.id = $1', [req.params.id]);
   await query('DELETE FROM benchmark_rows WHERE id = $1', [req.params.id]);
+  if (owner.rows[0]?.partner_id) await syncPartnerOfferAnomalies(owner.rows[0].partner_id);
   res.status(204).end();
 }));
 
@@ -138,6 +157,8 @@ benchmarkRoutes.put('/cells', body('row_id').isUUID(), body('column_id').isUUID(
      RETURNING *`,
     [req.body.row_id, req.body.column_id, req.body.value ?? '', req.body.color || 'none', req.body.source_url_id || null]
   );
+  const partnerId = await partnerIdFromRow(req.body.row_id);
+  if (partnerId) await syncPartnerOfferAnomalies(partnerId);
   res.json(result.rows[0]);
 }));
 
@@ -171,6 +192,7 @@ benchmarkRoutes.post('/partner/:partnerId/import', param('partnerId').isUUID(), 
       }
     }
   }
+  await syncPartnerOfferAnomalies(req.params.partnerId);
   res.status(201).json(await loadTable(req.params.partnerId));
 }));
 

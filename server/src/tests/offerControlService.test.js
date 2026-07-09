@@ -13,7 +13,7 @@ for (const file of [testDatabasePath, `${testDatabasePath}-wal`, `${testDatabase
 
 const { migrate } = await import('../db/migrate.js');
 const { query, close, databasePath } = await import('../db/pool.js');
-const { runOfferControl } = await import('../services/offerControlService.js');
+const { runOfferControl, syncProductOfferAnomalies } = await import('../services/offerControlService.js');
 
 function uuid(label) {
   const hex = Buffer.from(label).toString('hex').padEnd(32, '0').slice(0, 32);
@@ -50,8 +50,13 @@ try {
     [partnerId]
   );
 
+  const notListedId = uuid('not-listed');
+  const margin12Id = uuid('margin-12');
+  const margin991Id = uuid('margin-991');
+  const margin17Id = uuid('margin-17');
+
   await insertProduct({
-    id: uuid('not-listed'),
+    id: notListedId,
     partnerId,
     name: 'Produit non référencé',
     price4000m: null,
@@ -59,30 +64,31 @@ try {
     listed: false
   });
   await insertProduct({
-    id: uuid('margin-12'),
+    id: margin12Id,
     partnerId,
     name: 'Produit marge 12',
     price4000m: 100,
     purchasePrice: 88
   });
   await insertProduct({
-    id: uuid('margin-991'),
+    id: margin991Id,
     partnerId,
     name: 'Produit marge 9,91',
     price4000m: 111,
     purchasePrice: 100
   });
   await insertProduct({
-    id: uuid('margin-17'),
+    id: margin17Id,
     partnerId,
     name: 'Produit marge 17',
     price4000m: 100,
     purchasePrice: 83
   });
 
-  const report = await runOfferControl();
-  assert.equal(report.checked_products, 4);
-  assert.equal(report.created_tasks, 3);
+  assert.equal((await syncProductOfferAnomalies(notListedId)).created_tasks, 1);
+  assert.equal((await syncProductOfferAnomalies(margin12Id)).created_tasks, 1);
+  assert.equal((await syncProductOfferAnomalies(margin991Id)).created_tasks, 1);
+  assert.equal((await syncProductOfferAnomalies(margin17Id)).created_tasks, 0);
 
   const cards = await query(
     "SELECT * FROM crm_cards WHERE partner_id = $1 AND source = 'automatique'",
@@ -106,6 +112,13 @@ try {
   assert.ok(items.rows.some((item) => item.label.includes('Produit marge 12')));
   assert.ok(items.rows.some((item) => item.label.includes('Produit marge 9,91')));
   assert.ok(!items.rows.some((item) => item.label.includes('Produit marge 17')));
+
+  assert.equal((await syncProductOfferAnomalies(margin12Id)).created_tasks, 0);
+
+  const report = await runOfferControl();
+  assert.equal(report.checked_products, 4);
+  assert.equal(report.created_tasks, 0);
+  assert.equal(report.existing_tasks, 3);
 
   const secondReport = await runOfferControl();
   assert.equal(secondReport.created_tasks, 0);

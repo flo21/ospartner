@@ -73,7 +73,7 @@ export async function runPriceChecks() {
         ]
       );
     }
-    results.push(check.rows[0]);
+    results.push({ ...check.rows[0], product_id: row.product_id });
   }
   return results;
 }
