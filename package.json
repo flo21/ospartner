@@ -1,0 +1,22 @@
+{
+  "name": "partner-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Partner OS - internal SaaS dashboard for 4000m partner operations.",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace server\" \"npm run dev --workspace client\"",
+    "build": "npm run build --workspace client",
+    "migrate": "npm run migrate --workspace server",
+    "seed": "npm run seed --workspace server",
+    "db:inspect": "npm run db:inspect --workspace server",
+    "test:offer-control": "npm run test:offer-control --workspace server",
+    "install:all": "npm install --workspaces"
+  },
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
