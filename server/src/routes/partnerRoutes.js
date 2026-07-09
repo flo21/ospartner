@@ -120,8 +120,23 @@ partnerRoutes.delete(
   param('id').isUUID(),
   validate,
   asyncHandler(async (req, res) => {
-    await query('DELETE FROM partners WHERE id = $1', [req.params.id]);
-    res.status(204).end();
+    const partner = await query('SELECT id, name FROM partners WHERE id = $1', [req.params.id]);
+    if (!partner.rowCount) {
+      return res.status(404).json({ message: 'Partenaire introuvable.' });
+    }
+
+    try {
+      await query('DELETE FROM users WHERE partner_id = $1', [req.params.id]);
+      await query('DELETE FROM crm_cards WHERE partner_id = $1', [req.params.id]);
+      await query('DELETE FROM tasks WHERE partner_id = $1', [req.params.id]);
+      await query('DELETE FROM partners WHERE id = $1', [req.params.id]);
+      res.json({ success: true });
+    } catch (error) {
+      console.error(`Failed to delete partner ${req.params.id}`, error);
+      res.status(409).json({
+        message: 'Impossible de supprimer ce partenaire car des données liées bloquent la suppression.'
+      });
+    }
   })
 );
 

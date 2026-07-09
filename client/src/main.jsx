@@ -320,6 +320,22 @@ function State({ loading, error, children }) {
   return children;
 }
 
+function ConfirmDialog({ open, title, message, confirmLabel = 'Confirmer', tone = '', onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <div className="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title" onMouseDown={(event) => event.stopPropagation()}>
+        <h3 id="confirm-title">{title}</h3>
+        <p>{message}</p>
+        <div className="modal-actions">
+          <button type="button" onClick={onCancel}>Annuler</button>
+          <button type="button" className={tone === 'danger' ? 'danger-button solid' : 'primary'} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({ setPage }) {
   const { data, loading, error, reload } = useData('/dashboard');
   const offerControl = useData('/dashboard/offer-control');
@@ -335,10 +351,6 @@ function Dashboard({ setPage }) {
       {data && offerControl.data && (
         <div className="stack">
           <div className="kpi-grid">
-            <Kpi label="CA HT" value={money(data.summary.total_revenue_ht)} />
-            <Kpi label="Marge brute" value={money(data.summary.total_margin_ht)} />
-            <Kpi label="Marge moyenne" value={money(data.summary.average_margin_ht)} />
-            <Kpi label="Commandes" value={data.summary.orders_count} />
             <Kpi label="Partenaires actifs" value={data.summary.active_partners_count} />
             <Kpi label="Alertes prix" value={data.summary.open_price_alerts} tone="warn" />
             <Kpi label="Tâches To do" value={data.summary.todo_tasks_count} tone={data.summary.todo_tasks_count ? 'warn' : ''} />
@@ -415,6 +427,12 @@ function SimpleList({ title, rows, valueKey, moneyValue }) {
 function Partners({ setPage }) {
   const { data, loading, error, reload } = useData('/partners');
   const [form, setForm] = useState({ name: '', company: '', email: '', city: '', region: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [feedback, setFeedback] = useState(() => {
+    const message = sessionStorage.getItem('partner-os-feedback');
+    if (message) sessionStorage.removeItem('partner-os-feedback');
+    return message || '';
+  });
 
   async function createPartner(event) {
     event.preventDefault();
@@ -429,13 +447,28 @@ function Partners({ setPage }) {
     setForm({ name: '', company: '', email: '', city: '', region: '', status: 'actif', health_score: 70, business_priority: '', estimated_revenue_share: '' });
     reload();
   }
+
+  async function deletePartner() {
+    if (!deleteTarget) return;
+    try {
+      await api(`/partners/${deleteTarget.id}`, { method: 'DELETE' });
+      setFeedback(`Le partenaire ${deleteTarget.name} a été supprimé.`);
+      setDeleteTarget(null);
+      reload();
+    } catch (err) {
+      setFeedback(err.message);
+      setDeleteTarget(null);
+    }
+  }
+
   return (
     <State loading={loading} error={error}>
       <div className="two-col wide-left">
         <Panel title="CRM partenaires">
+          {feedback && <div className={feedback.includes('supprimé') ? 'success-block' : 'error-block'}>{feedback}</div>}
           <TableContainer>
           <table className="data-table partners-table">
-            <thead><tr><th>Partenaire</th><th>Contact</th><th>Zone</th><th>Importance</th><th>Poids CA</th><th>Statut</th><th>Santé</th></tr></thead>
+            <thead><tr><th>Partenaire</th><th>Contact</th><th>Zone</th><th>Importance</th><th>Poids CA</th><th>Statut</th><th>Santé</th><th className="table-actions">Actions</th></tr></thead>
             <tbody>{data?.map((partner) => (
               <tr key={partner.id} className="clickable-row" onClick={() => setPage(`partner-detail:${partner.id}`)}>
                 <td><strong>{partner.name}</strong><small>{partner.company}</small></td>
@@ -445,6 +478,9 @@ function Partners({ setPage }) {
                 <td>{partner.estimated_revenue_share == null ? 'non renseigné' : percent(partner.estimated_revenue_share)}</td>
                 <td><Badge>{partner.status}</Badge></td>
                 <td>{partner.health_score}/100</td>
+                <td className="table-actions">
+                  <button className="danger-button" onClick={(event) => { event.stopPropagation(); setDeleteTarget(partner); }}><Trash2 size={15} /> Supprimer</button>
+                </td>
               </tr>
             ))}</tbody>
           </table>
@@ -470,6 +506,15 @@ function Partners({ setPage }) {
           </Panel>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Supprimer le partenaire"
+        message="Confirmer la suppression de ce partenaire ? Cette action est irréversible."
+        confirmLabel="Supprimer"
+        tone="danger"
+        onConfirm={deletePartner}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </State>
   );
 }
@@ -483,6 +528,8 @@ function PartnerCrm({ partnerId, initialTab = 'overview', initialFilter = '', se
   const checks = useData(`/monitoring/price-checks?partner_id=${partnerId}`, [partnerId]);
   const [analysis, setAnalysis] = useState(null);
   const [editRequest, setEditRequest] = useState(0);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const loading = partner.loading || products.loading || urls.loading || checks.loading;
   const error = partner.error || products.error || urls.error || checks.error;
@@ -503,6 +550,17 @@ function PartnerCrm({ partnerId, initialTab = 'overview', initialFilter = '', se
     setAnalysis(await api(`/partners/${partnerId}/analysis`));
   }
 
+  async function deletePartner() {
+    try {
+      await api(`/partners/${partnerId}`, { method: 'DELETE' });
+      sessionStorage.setItem('partner-os-feedback', `Le partenaire ${partner.data.name} a été supprimé.`);
+      setPage('partners');
+    } catch (err) {
+      setDeleteError(err.message);
+      setConfirmDelete(false);
+    }
+  }
+
   return (
     <State loading={loading} error={error}>
       {partner.data && (
@@ -521,8 +579,10 @@ function PartnerCrm({ partnerId, initialTab = 'overview', initialFilter = '', se
             <div className="partner-header-actions">
               <button className="ghost" onClick={() => setPage('dashboard')}><ArrowLeft size={17} /> Retour dashboard</button>
               <button onClick={() => { setTab('overview'); setEditRequest((value) => value + 1); }}><Pencil size={16} /> Modifier le partenaire</button>
+              <button className="danger-button" onClick={() => setConfirmDelete(true)}><Trash2 size={16} /> Supprimer</button>
             </div>
           </div>
+          {deleteError && <div className="error-block">{deleteError}</div>}
           <PartnerOfferSummary stats={stats} />
           <div className="tabs">
             {[
@@ -534,6 +594,15 @@ function PartnerCrm({ partnerId, initialTab = 'overview', initialFilter = '', se
           {tab === 'overview' && <PartnerOverview partner={partner.data} stats={stats} analysis={analysis} generateAnalysis={generateAnalysis} reloadPartner={partner.reload} editRequest={editRequest} />}
           {tab === 'products' && <ProductCrud partnerId={partnerId} products={products.data || []} urls={urls.data || []} initialFilter={routeFilter} reload={products.reload} openBenchmark={() => setTab('benchmark')} />}
           {tab === 'benchmark' && <BenchmarkTab partnerId={partnerId} />}
+          <ConfirmDialog
+            open={confirmDelete}
+            title="Supprimer le partenaire"
+            message="Confirmer la suppression de ce partenaire ? Cette action est irréversible."
+            confirmLabel="Supprimer"
+            tone="danger"
+            onConfirm={deletePartner}
+            onCancel={() => setConfirmDelete(false)}
+          />
         </div>
       )}
     </State>
